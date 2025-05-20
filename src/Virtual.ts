@@ -16,6 +16,7 @@ import { observeDOM } from "./observeDOM";
 import { tick } from "./tick";
 import { userEvent } from "@testing-library/user-event";
 import type { VirtualCommandArgs } from "./commands/types";
+import { getNextTabbable, getPreviousTabbable } from "./tabbableUtils";
 
 /**
  * Modifiers ported from https://github.com/guidepup/guidepup to prevent ESM
@@ -206,6 +207,8 @@ export class Virtual {
   #treeCache: AccessibilityNode[] | null = null;
   #disconnectDOMObserver: (() => void) | null = null;
   #boundHandleFocusChange: ((event: Event) => Promise<void>) | null = null;
+  #tempIgnoreFocusChange: boolean = false;
+  #boundPreTab: ((event: KeyboardEvent) => void) | null = null;
 
   #checkContainer() {
     if (!this.#container) {
@@ -292,7 +295,12 @@ export class Virtual {
     this.#treeCache = null;
   }
 
-  async #handleFocusChange({ target }: Event) {
+  async #handleFocusChangeForTarget(target: Element) {
+    if (this.#tempIgnoreFocusChange) {
+      this.#tempIgnoreFocusChange = false;
+      return;
+    }
+
     await tick();
 
     this.#invalidateTreeCache();
@@ -313,11 +321,49 @@ export class Virtual {
     this.#updateState(newActiveNode, true);
   }
 
+  async #handleFocusChange(event: Event) {
+    if (event.target instanceof Element) {
+      await this.#handleFocusChangeForTarget(event.target);
+    }
+  }
+
   #focusActiveElement() {
     // Is only called following a null guard for `this.#activeNode`.
 
     const target = getElementNode(this.#activeNode!);
+    this.#tempIgnoreFocusChange = true;
     target?.focus();
+  }
+
+  async #handleAriaActiveDescendantChange(mutations: MutationRecord[]) {
+    await tick();
+
+    this.#checkContainer();
+    const container = this.#container!;
+
+    mutations.forEach((mutation) => {
+      if (
+        mutation.type !== 'attributes' ||
+        mutation.attributeName !== 'aria-activedescendant' ||
+        !(mutation.target instanceof Element) ||
+        document.activeElement !== mutation.target ||
+        !container.contains(mutation.target)
+      ) {
+        return;
+      }
+
+      const activeDescendant = mutation.target.getAttribute('aria-activedescendant');
+      if (!activeDescendant) {
+        return;
+      }
+
+      const activeDescendantNode = (container.ownerDocument ?? document).querySelector(`[id="${activeDescendant}"]`);
+      if (!activeDescendantNode) {
+        return;
+      }
+
+      this.#handleFocusChangeForTarget(activeDescendantNode);
+    });
   }
 
   async #announceLiveRegions(mutations: MutationRecord[]) {
@@ -593,6 +639,7 @@ export class Virtual {
       (mutations: MutationRecord[]) => {
         this.#invalidateTreeCache();
         this.#announceLiveRegions(mutations);
+        this.#handleAriaActiveDescendantChange(mutations);
       }
     );
 
@@ -603,8 +650,9 @@ export class Virtual {
     }
 
     this.#boundHandleFocusChange = this.#handleFocusChange.bind(this);
-
+    this.#boundPreTab = this.#preTab.bind(this);
     this.#container.addEventListener("focusin", this.#boundHandleFocusChange);
+    this.#container.addEventListener("keydown", this.#boundPreTab as EventListener, { capture: true });
 
     this.#updateState(tree[0]);
 
@@ -635,6 +683,7 @@ export class Virtual {
   async stop() {
     this.#disconnectDOMObserver?.();
     this.#container?.removeEventListener("focusin", this.#boundHandleFocusChange);
+    this.#container?.removeEventListener("keydown", this.#boundPreTab as EventListener, { capture: true });
     this.#invalidateTreeCache();
 
     if (this.#cursor) {
@@ -647,6 +696,7 @@ export class Virtual {
     this.#itemTextLog = [];
     this.#spokenPhraseLog = [];
     this.#boundHandleFocusChange = null;
+    this.#boundPreTab = null;
     return;
   }
 
@@ -735,6 +785,31 @@ export class Virtual {
     this.#updateState(newActiveNode);
 
     return;
+  }
+
+  #preTab(event: KeyboardEvent) {
+    if (event.key !== 'Tab') {
+      return;
+    }
+
+    this.#checkContainer();
+
+    const currentElement = this.#activeNode ? getElementNode(this.#activeNode) : null;
+
+    const toFocus = event.shiftKey ?
+      getNextTabbable(currentElement, this.#container!) :
+      getPreviousTabbable(currentElement, this.#container!);
+
+    if (!toFocus) {
+      return;
+    }
+
+    if (document.activeElement === toFocus) {
+      return;
+    }
+
+    this.#tempIgnoreFocusChange = true;
+    toFocus.focus();
   }
 
   /**

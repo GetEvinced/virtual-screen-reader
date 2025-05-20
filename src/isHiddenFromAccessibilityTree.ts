@@ -1,6 +1,9 @@
+import { tabbable } from "tabbable";
 import { isElement } from "./isElement";
 
 const TEXT_NODE = 3;
+
+let warned = false;
 
 export function isHiddenFromAccessibilityTree(node: Node | null): node is null {
   if (!node) {
@@ -23,7 +26,13 @@ export function isHiddenFromAccessibilityTree(node: Node | null): node is null {
     }
 
     if (node.getAttribute("aria-hidden") === "true") {
-      return true;
+      if (tabbable(node).length === 0) {
+        return true;
+      }
+      if (!warned) {
+        console.warn('ignoring aria-hidden since node has tabbable children', node);
+        warned = true;
+      }
     }
 
     const getComputedStyle = node.ownerDocument.defaultView?.getComputedStyle;

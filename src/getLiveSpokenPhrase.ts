@@ -314,7 +314,11 @@ export function getLiveSpokenPhrase({
    * REF: https://github.com/w3c/aria/issues/712
    */
   if (atomic) {
-    return `${live}: ${getSpokenPhraseForNode(liveTarget)}`;
+    const spokenPhrase = getSpokenPhraseForNode(liveTarget);
+    if (!spokenPhrase) {
+      return "";
+    }
+    return `${live}: ${spokenPhrase}`;
   }
 
   const spokenPhrases = relevant
